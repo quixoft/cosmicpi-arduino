@@ -21,7 +21,7 @@ Typing the '>' character turns on command input
 It is important to keep the Python dictionary objects synchronised with the Arduino firmware
 otherwise this monitor will not understand the data being sent to it
 
-julian.lewis lewis.julian@gmail.com Aug/2016
+julian.lewis lewis.julian@gmail.com 11/December/2016 17:00
 
 """
 
@@ -94,8 +94,9 @@ class Event(object):
 		self.HLP = { "Idn":"0"  ,"Nme":"0"  ,"Hlp":"0" }
 		self.TXT = { "Txt":"0" }
 		self.BER = { "Ber":"0"  ,"Adr":"0"  ,"Reg":"0","Bus":"0" }
-		self.HPU = { "Ato":"0"  ,"Hpu":"0"  ,"Thr":"0","Abr":"0" }
+		self.HPU = { "Ato":"0"  ,"Hpu":"0"  ,"Th0":"0","Th1":"0"  ,"Thr":"0","Abr":"0" }
 		self.UID = { "Uid":"0" }
+		self.VER = { "Ver":"0" }
 
 		# Add ons
 
@@ -109,7 +110,8 @@ class Event(object):
 				"ACL":self.ACL, "LOC":self.LOC, "TIM":self.TIM, "STS":self.STS,
 				"EVT":self.EVT, "DAT":self.DAT, "SQN":self.SQN, "PAT":self.PAT, 
 				"DTG":self.DTG, "CMD":self.CMD, "HLP":self.HLP, "TXT":self.TXT,
-				"MEV":self.MEV, "BER":self.BER, "HPU":self.HPU, "UID":self.UID }
+				"MEV":self.MEV, "BER":self.BER, "HPU":self.HPU, "UID":self.UID,
+				"VER":self.VER }
 
 		self.newvib = 0	# Vibration
 		self.newmev = 0 # Magnetic event
@@ -320,6 +322,9 @@ class Event(object):
 	def get_uid(self):
 		return self.recd["UID"]
 
+	def get_ver(self):
+		return self.recd["VER"]
+
 	def new_cmd(self):
 		if self.newcmd:
 			self.newcmd = 0
@@ -507,6 +512,8 @@ def main():
 
 	time.sleep(1)
 	ser.write("JSON 1\n")	
+	time.sleep(1)
+	ser.write("VERS\n")
 	
 	try:
 		while(True):
@@ -583,12 +590,18 @@ def main():
 						ber = evt.get_ber()
 						hpu = evt.get_hpu()
 						uid = evt.get_uid()
+						ver = evt.get_ver()
 
 						s = "ARDUINO STATUS"
 						print s
 						if ptsflg:
 							log.write(s + '\n')
 
+						s = "FirmwareVer...: Ver:%s" % (ver["Ver"])
+						print s
+						if ptsflg:
+							log.write(s + "\n")
+						
 						s = "UniqueId......: Uid:%s" % (uid["Uid"])
 						print s
 						if ptsflg:
@@ -654,7 +667,7 @@ def main():
 						if ptsflg:
 							log.write(s + '\n')
 
-						s = "HT power......: Ato:%s Hpu:%s Thr:%s Abr:%s\n" % (hpu["Ato"],hpu["Hpu"],hpu["Thr"],hpu["Abr"])
+						s = "HT power......: Ato:%s Hpu:%s Th0:%s Th1:%s Thr:%s Abr:%s\n" % (hpu["Ato"],hpu["Hpu"],hpu["Th0"],hpu["Th1"],hpu["Thr"],hpu["Abr"])
 						print s
 						if ptsflg:
 							log.write(s + '\n')
@@ -801,7 +814,12 @@ def main():
 				if monflg:
 					if evt.new_hpu():
 						hpu = evt.get_hpu()
-						print "\nHPU:Ato:%s" % hpu["Ato"]
+						s = "HPU:Ato:%s Th0:%s Th1:%s" % (hpu["Ato"],hpu["Th0"],hpu["Th1"])
+						print "\n%s" % (s)
+						log.write(s + "\n")
+						if udpflg:
+							s = evt.extract("HPU")
+							sio.send_event_pkt(s,ipaddr,ipport)
 
 				if vibflg:
 					if evt.new_mev():

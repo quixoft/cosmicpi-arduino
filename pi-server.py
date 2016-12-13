@@ -4,7 +4,7 @@
 """
 Handle UDP packets from the cosmic pi and log them
 Output can be csv or json depending on command line option -c
-julian.lewis lewis.julian@gmail.com 26/Feb/2016
+julian.lewis lewis.julian@gmail.com 11/December/2016 17:00
 """
 
 import sys
@@ -102,14 +102,42 @@ class Notifications(object):
 
 		self.conn.getresponse()
 
+# Compare time stamps
+
+class Compare(object):
+
+	def __init__(self):
+
+		self.nms = ["Et1","Et2","Et3","Et4","Et5"]
+		self.t1 = [0,1,2,3,4]
+		self.t2 = [0,1,2,3,4]
+
+	def cmp(self,reg):
+		k = reg.get_len()
+		if k > 1:
+			r1 = reg.get_reg_by_index(0)
+			r2 = reg.get_reg_by_index(1)
+			for i in range(0,4):
+				self.t1[i] = r1[self.nms[i]]
+				self.t2[i] = r2[self.nms[i]]
+				
+			for i in range(0,4):
+				for j in range(0,4):
+					df = abs(self.t1[i] - self.t2[j])
+					#if (df > 0.0) and (df < 0.001):
+						#print "Coin:%f (%f-%f)" % (df,self.t1[i],self.t2[j]) 
+
+					if (df > 0.0) and (df < 0.0001):
+						print "Muon:%f (%f-%f) Evt[%d-%d]" % (df,self.t1[i],self.t2[j],i+1,j+1)
+ 
 # Each cosmic pi client can register with the server
 # We check package sequence numbers, hardware status
 
 class Registrations(object):
 
 	def __init__(self):
-
-		self.reg = {"Ipa":"s","Sqn":0,"Pat":"s","Ntf":False,"Htu":"0","Bmp":"0","Acl":"0","Mag":"0","Gps":"0"}
+		
+		self.reg = {"Ipa":"s","Sqn":0,"Pat":"s","Ntf":False,"Htu":"0","Bmp":"0","Acl":"0","Mag":"0","Gps":"0","Et1":1.0,"Et2":2.0,"Et3":3.0,"Et4":4.0,"Et5":5.0}
 		self.regs = []
 
 	def get_len(self):
@@ -159,28 +187,37 @@ class Event(object):
 	def __init__(self):
 
 		# These are the UDP packets containing json strings we are expecting
-
                 self.HTU = { "Tmh":"0.0","Hum":"0.0"             }
                 self.BMP = { "Tmb":"0.0","Prs":"0.0","Alb":"0.0" }
                 self.VIB = { "Vax":"0"  ,"Vcn":"0"               }
                 self.MAG = { "Mgx":"0.0","Mgy":"0.0","Mgz":"0.0" }
+                self.MEV = { "Mev":"0"  ,"Met":"0"  ,"Mdx":"0.0" ,"Mdy":"0.0", "Mdz":"0.0" }
                 self.ACL = { "Acx":"0.0","Acy":"0.0","Acz":"0.0" }
                 self.LOC = { "Lat":"0.0","Lon":"0.0","Alt":"0.0" }
                 self.TIM = { "Upt":"0"  ,"Frq":"0"  ,"Sec":"0"   }
+                self.DTG = { "Yer":"0"  ,"Mnt":"0"  ,"Day":"0"   }
                 self.STS = { "Qsz":"0"  ,"Mis":"0"  ,"Ter":"0","Tmx":"0","Htu":"0","Bmp":"0","Acl":"0","Mag":"0","Gps":"0","Adn":"0","Gri":"0","Eqt":"0","Chm":"0" }
                 self.EVT = { "Evt":"0"  ,"Frq":"0"  ,"Tks":"0","Etm":"0.0","Adc":"[[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]]" }
-	
-		# Add ons
+                self.CMD = { "Cmd":"0"  ,"Res":"0"  ,"Msg":"0" }
+                self.HLP = { "Idn":"0"  ,"Nme":"0"  ,"Hlp":"0" }
+                self.TXT = { "Txt":"0" }
+                self.BER = { "Ber":"0"  ,"Adr":"0"  ,"Reg":"0","Bus":"0" }
+		self.HPU = { "Ato":"0"  ,"Hpu":"0"  ,"Th0":"0","Th1":"0"  ,"Thr":"0","Abr":"0" }
+                self.UID = { "Uid":"0" }
 
-		self.DAT = { "Dat":"s" }		# Date
-		self.SQN = { "Sqn":"0" }		# Sequence number
-		self.PAT = { "Pat":"s","Ntf":"0" }	# Pushover application token
+                # Add ons
+
+                self.DAT = { "Dat":"s" }                # Date
+                self.SQN = { "Sqn":"0" }                # Sequence number
+                self.PAT = { "Pat":"s","Ntf":"0" }      # Pushover application token
 
 		# Now build the main dictionary with one entry for each json string we will process
 
-		self.recd = {	"HTU":self.HTU, "BMP":self.BMP, "VIB":self.VIB, "MAG":self.MAG,
-				"ACL":self.ACL, "LOC":self.LOC, "TIM":self.TIM, "STS":self.STS,
-				"EVT":self.EVT, "DAT":self.DAT, "SQN":self.SQN, "PAT":self.PAT }
+                self.recd = {   "HTU":self.HTU, "BMP":self.BMP, "VIB":self.VIB, "MAG":self.MAG,
+                                "ACL":self.ACL, "LOC":self.LOC, "TIM":self.TIM, "STS":self.STS,
+                                "EVT":self.EVT, "DAT":self.DAT, "SQN":self.SQN, "PAT":self.PAT,
+                                "DTG":self.DTG, "CMD":self.CMD, "HLP":self.HLP, "TXT":self.TXT,
+                                "MEV":self.MEV, "BER":self.BER, "HPU":self.HPU, "UID":self.UID }
 
 		self.newpat = False
 		self.newsqn = False
@@ -241,6 +278,12 @@ class Event(object):
 
 	def get_pat(self):
 		return self.recd["PAT"]
+
+	def get_hpu(self):
+		return self.recd["HPU"]
+
+	def get_uid(self):
+		return self.recd["UID"]
 
 def Daemon():
 	"""Detach a process from the controlling terminal and run it in the background as a daemon """
@@ -336,6 +379,8 @@ def main():
 
 	reg = Registrations()
 
+	cmp = Compare()
+
 	newsqn = False
 	badhard = False
 	display = True
@@ -360,6 +405,30 @@ def main():
 					evd = evt.get_evt()
 					tim = evt.get_tim()
 					dat = evt.get_dat()
+
+					cmp.cmp(reg)
+					r = reg.get_create_reg("Ipa",str(recv[1]))
+					if evd["Evt"] == 1:
+						r["Et1"] = evd["Etm"]
+						r["Et2"] = 2.0
+						r["Et3"] = 3.0
+						r["Et4"] = 4.0
+						r["Et5"] = 5.0
+
+					if evd["Evt"] == 2:
+						r["Et2"] = evd["Etm"]
+
+					if evd["Evt"] == 3:
+						r["Et3"] = evd["Etm"]
+
+					if evd["Evt"] == 4:
+						r["Et4"] = evd["Etm"]
+
+					if evd["Evt"] == 5:
+						r["Et5"] = evd["Etm"]
+
+					#reg.set_reg(r)
+					
 					if display:
 						print
 						print "Cosmic Event..: Evt:%s Frq:%s Tks:%s Etm:%s" % (evd["Evt"],evd["Frq"],evd["Tks"],evd["Etm"])
@@ -393,6 +462,13 @@ def main():
 						print "Humidity......: Tmh:%s Hum:%s Alt:%s" % (htu["Tmh"],htu["Hum"],loc["Alt"])
 						print "Time..........: Sec:%s\n" % tim["Sec"]
 
+				elif nstr[0].find("HPU") != -1:
+					hpu = evt.get_hpu();
+					if display:
+						print
+						print "HT Power set..: Ato:%s Hpu:%s Th0:%s Th1:%s Thr:%s Abr:%s" % (hpu["Ato"],hpu["Hpu"],hpu["Th0"],hpu["Th1"],hpu["Thr"],hpu["Abr"])
+
+
 				elif nstr[0].find("PAT") != -1:
 					pat = evt.get_pat()
 					print
@@ -407,7 +483,7 @@ def main():
 					r = reg.get_create_reg("Ipa",str(recv[1])) 
 					r["Pat"] = pat["Pat"] 
 					r["Ntf"] = pat["Ntf"]
-					reg.set_reg(r)
+					#reg.set_reg(r)
 
 				elif nstr[0].find("STS") != -1:
 					sts = evt.get_sts()
@@ -417,7 +493,7 @@ def main():
 					r["Acl"] = sts["Acl"]
 					r["Mag"] = sts["Mag"]
 					r["Gps"] = sts["Gps"]
-					reg.set_reg(r)
+					#reg.set_reg(r)
 
 					msg = ""
 					if int(r["Htu"]) == 0:
@@ -457,7 +533,7 @@ def main():
 							nfs.send_ntf(pat["Pat"],msg)
 
 					r["Sqn"] = i
-					reg.set_reg(r)					
+					#reg.set_reg(r)					
 
 				if logflg:
 					if csv:
@@ -513,6 +589,8 @@ def main():
 						for i in range(0,k):
 							r = reg.get_reg_by_index(i)
 							print "Idx:%d Ipa:%s Pat:%s Sqn:%d Ntf:%d" % (i,r["Ipa"],r["Pat"],r["Sqn"],r["Ntf"])
+							print "Et1:%s Et2:%s Et3:%s" % (r["Et1"],r["Et2"],r["Et3"])
+
 				if back == False:
 					kbrd.echo_off()
 

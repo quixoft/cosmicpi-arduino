@@ -14,7 +14,7 @@
 
 // Julian Lewis lewis.julian@gmail.com
 
-#define VERS "2016/December"
+#define FWVERS "13/December/2016 12:00"
 #define CSVERS "V1"	// Output CSV version
 
 // The output from this program is processed by a Python monitor on the other end of the
@@ -25,6 +25,10 @@
 // global is set non zero, otherwise the output format is CSV
 
 // Here is the list of all records where 'f' denotes float and 'i' denotes integer ...
+
+// {'VER':{'Ver':%s}}
+// Version string
+//
 // {'HTU':{'Tmh':f,'Hum':f}}
 // HTU21DF record containing Tmh:temperature in C Hum:humidity percent
 //
@@ -72,8 +76,9 @@
 // {'BER':{'Ber':%d,'Adr':%s,'Reg':%s,'Bus':%d}}
 // Bus error warning, Ber=error code, Adr=the hex address, Reg=the hex register, Bus=the bus number 0/1
 //
-// {'HPU':{'Ato':%s,'Hpu':%s,'Thr':%s,'Abr':%s}}
+// {'HPU':{'Ato':%s,'Hpu':%s,'Th0':%s,'Th1':%s,'Thr':%s,'Abr':%s}}
 // HT power supply Ato:Thauto algorithm value Hpu:Manual value Thr:Threshold Abr:AB potentiometer bits
+// If Abr is zero the thresholds are set automatically, Th0 and Th1 are the auto values for channel 0 and 1
 
 // N.B. These records pass the data to a python monitor over the serial line. Python has awsome string handling and looks them up in
 // associative arrays to build records of any arbitary format you want. So this is only the start of the story of record processing.
@@ -142,6 +147,11 @@
 #define MAX2_PIN 36
 #define MAX3_PIN 37
 
+// Count STRIGA and STRIGB interrupts
+
+#define STRIGA_PIN 38
+#define STRIGB_PIN 39
+
 // Set up the pins to remap SPI by hand
 const int SS_PIN   = 42; 
 const int SCK_PIN  = 44;
@@ -157,6 +167,10 @@ const int MOSI_PIN = 43;
 #define ACL_ADAFRUIT 1		// Used to say an Adafruite board detected
 #define ACL_ON_MB 2		// Used to say LMS303D found on MB
 #define ACL_CTRL_REG1_A 0x20	// Used to test for LSM303DLHC presence
+
+// Leds  flag
+
+int leds_on = 1;
 
 // Hydrometer chip is always on bus 1 at the same address even for the adafruit breakout
 #define HTU_BUS_1_ADDR 0x40
@@ -236,6 +250,8 @@ uint16_t magnat_event_threshold = 300;  // Magnetic threshold +-4gauss full scal
 
 typedef enum {
 	NOOP,	// No-operation
+	LEDS,	// Leds On/Off
+	VERS,	// Version string
 	HELP,	// Help
 	HTUX,	// Reset HTU chip
 	HTUD,	// HUT display rate
@@ -274,6 +290,7 @@ typedef enum {
 
 	WRTH,	// Write thresholds to MAX5387
 	ABTH,	// Select MAX5387 write pots
+	STRG,	// STRIGA and STRIGB counters
 
 	JSON,	// Set out put JSON 1, CSV 0
 
@@ -299,6 +316,8 @@ char	 cmd_mesg[CMD_MAX_MSG]; // Last command message
 // Command functions forward references 
 
 void noop(int arg);
+void leds(int arg);
+void vers(int arg);
 void help(int arg);
 void htud(int arg);
 void bmpd(int arg);
@@ -330,12 +349,15 @@ void wrpu(int arg);
 void rcpu(int arg);
 void wrth(int arg);
 void abth(int arg);
+void strg(int arg);
 void json(int arg);
 
 // Command table
 
 CmdStruct cmd_table[CMDS] = {
 	{ NOOP, noop, "NOOP", "Do nothing", 0 },
+	{ LEDS, leds, "LEDS", "Leds on=1, off=0", 1 },
+	{ VERS, vers, "VERS", "Version number", 0 },
 	{ HELP, help, "HELP", "Display commands", 0 },
 	{ HTUD, htud, "HTUD", "HTU Temperature-Humidity display rate", 1 },
 	{ BMPD, bmpd, "BMPD", "BMP Temperature-Altitude display rate", 1 },
@@ -367,6 +389,7 @@ CmdStruct cmd_table[CMDS] = {
 	{ RCPU,	rcpu, "RCPU", "Recievie logic MAX1923 PU 0=just write, 1=setON, 2=setOFF", 1 },
 	{ WRTH, wrth, "WRTH", "Write to the MAX5387 Threshold pots currently selected", 1 },
 	{ ABTH, abth, "ABTH", "Select MAX5387 pots 1=A_ONLY, 2=B_ONLY, 3=A_AND_B", 1 },
+	{ STRG, strg, "STRG", "Display strigA and strigB counters 1=Reset", 1 },
 	{ JSON, json, "JSON", "Select output format JSON=1 or CSV=0 (default)", 1 }
 };
 
@@ -580,12 +603,14 @@ void TC0_Handler() {
 	
 	IncDateTime();				// Next second
 
-	if (pps_led) {		
-		digitalWrite(PPS_PIN,HIGH);
-		pps_led = false;
-	} else {
-		digitalWrite(PPS_PIN,LOW);
-		pps_led = true;
+	if (leds_on) {
+		if (pps_led) {		
+			digitalWrite(PPS_PIN,HIGH);
+			pps_led = false;
+		} else {
+			digitalWrite(PPS_PIN,LOW);
+			pps_led = true;
+		}
 	}
 }
 
@@ -673,7 +698,9 @@ void TC6_Handler() {
 			wbuf[widx].Tks = new_ra;
 			AdcPullData(&wbuf[widx]);
 			widx++;
-			digitalWrite(EVT_PIN,HIGH);	// Event LEP on, off in loop()
+			if (leds_on)
+				digitalWrite(EVT_PIN,HIGH);	// Event LEP on, off in loop()
+
 		} // else inc_ht_flg++;
 	} else
 		inc_ht_flg++;
@@ -1046,20 +1073,33 @@ void AdcSetup() {
 
 // Pull all data (16 values) from the ADC into a buffer
 
+uint16_t avc0 = 0;
+uint16_t avc1 = 0;
+
 uint8_t AdcPullData(struct Event *b) {
 	
-	int i;
+	int i, a0=0, a1=0;
 
 	for (i=0; i<adc_samples_per_evt; i++) {		// For all in ADC pipeline
 		if (channel_mask & 0x01) {
 			while((ADC->ADC_ISR & 0x01)==0);	// Wait for channel 0 (2.5us)
 			b->Ch0[i] = (uint16_t) ADC->ADC_CDR[0];	// Read ch 0
+			a0 += b->Ch0[i];			// Average for threshold setting
 		}
 		if (channel_mask & 0x02) {
 			while((ADC->ADC_ISR & 0x02)==0);	// Wait for channel 1 (2.5us)
 			b->Ch1[i] = (uint16_t) ADC->ADC_CDR[1];	// Read ch 1
+			a1 += b->Ch1[i];			// Average for threshold setting
 		}
 	}
+
+	a0 = a0/adc_samples_per_evt;
+	if (avc0) avc0 = (avc0+a0)/2;				// Running average
+	else      avc0 = a0;
+
+	a1 = a1/adc_samples_per_evt;
+	if (avc1) avc1 = (avc1+a1)/2;				// Running average
+	else	  avc1 = a1;
 }
 
 // Increment date time by one second when not using the GPS
@@ -1350,6 +1390,25 @@ void GpsSetup() {
 	Serial1.println(FMWVERS);
 }
 
+// Count interrupts from STRIGA and STRIGB
+
+long striga = 0;
+void StrigA_ISR() {
+	striga++;
+}
+
+long strigb = 0;
+void StrigB_ISR() {
+	strigb++;
+}
+
+void Strig_setup() {
+	pinMode(STRIGA_PIN, INPUT);
+	pinMode(STRIGB_PIN, INPUT);
+	attachInterrupt(digitalPinToInterrupt(STRIGA_PIN),StrigA_ISR,RISING);
+	attachInterrupt(digitalPinToInterrupt(STRIGB_PIN),StrigB_ISR,RISING);
+}
+
 // Arduino setup function, initialize hardware and software
 // This is the first function to be called when the sketch is started
 
@@ -1398,11 +1457,11 @@ void setup() {
 
 	// Power OFF/ON the breakouts
 
-	digitalWrite(PPS_PIN,HIGH);
+	digitalWrite(PPS_PIN,LOW);
 	digitalWrite(EVT_PIN,HIGH);
 	rbrk(0);
 	rbrk(1);
-	digitalWrite(PPS_PIN,LOW);
+	digitalWrite(PPS_PIN,HIGH);
 	digitalWrite(EVT_PIN,LOW);
 
 	// Initialize breakouts
@@ -1421,7 +1480,9 @@ void setup() {
 
 	SetHtValue(1);	// Set the High Tension
 	TimersStart();	// Start timers
-	PushUid(1);	// Push UID 128 bit code
+	PushUid(1);	// Push UID 128 bit codei
+
+	Strig_setup();	// Counter trigger interrupts
 }
 
 // These two routines are needed because the Serial.print method prints without using interrupts.
@@ -1728,6 +1789,15 @@ void ReadOneChar() {
 
 void noop(int arg) { };	// That was easy
 
+void vers(int arg) {
+	sprintf(cmd_mesg,"VER:%s",FWVERS);
+	if (output_format) 
+		sprintf(txt,"{'VER':{'Ver':'%s'}}\n",FWVERS);
+	else
+		sprintf(txt,"%s,VER,%s\n",CSVERS,FWVERS);
+	PushTxt(txt);
+}
+
 void help(int arg) {	// Display the help
 	int i;
 	CmdStruct *cms;
@@ -1903,6 +1973,23 @@ void PushCoCo(int flg) {
 		PushTxt(txt);
 	}
 }
+
+// Leds On/Off
+
+void leds(int arg) {
+
+	if (arg) {
+		leds_on = 1;
+		sprintf(cmd_mesg,"LEDS: set to flash");
+	} else {
+		leds_on = 0;
+		sprintf(cmd_mesg,"LEDS: Are off");
+	}
+
+	digitalWrite(EVT_PIN,LOW);
+	digitalWrite(PPS_PIN,LOW);
+}	
+		
 // Look up a command in the command table for the given command string
 // and call it with its single integer parameter
 
@@ -2726,6 +2813,7 @@ byte bitBang(byte _send)  {
 		return _receive;
 	return 0xFF;
 }
+
 uint8_t puval = 0;	// 0x6E Seems about right at room temp
 void wrpu(int arg) {
 	uint8_t send, recv;
@@ -2771,14 +2859,44 @@ void rcpu(int arg) {
 #define B_ONLY 0x12
 #define A_AND_B 0x13
 
-uint8_t abreg = A_AND_B;
+uint8_t abreg = 0;	// Auto
 uint8_t thval = 0x30;	// Nice initial value
+uint8_t athv0 = 0;	// Automatic threshold hardware value channel 0
+uint8_t athv1 = 0;
+
+void SetThrsValue() {
+	float tvalf;		// Tempory voltage value
+	int   tvali;		// Temp threshold hardware value
+
+	if (abreg) return;	// Not in auto
+
+	tvalf = VoltsPoint(avc0);		// Average ADC background value
+	tvali = ((tvalf*256.0)/3.3) + thval;	// ADC background + thval
+	if (tvali > 0xFF) tvali = 0xFF;		// Clamp at 8 bits
+	athv0 = tvali;
+	BusWrite(MAX_ADDR,A_ONLY,athv0,0);	// Set threshold on channel 0 bus 0
+
+	tvalf = VoltsPoint(avc1);
+	tvali = ((tvalf*256.0)/3.3) + thval;
+	if (tvali > 0xFF) tvali = 0xFF;
+	athv1 = tvali;
+	BusWrite(MAX_ADDR,B_ONLY,athv1,0);	// Set channel 1 threshold
+
+	PushHpu();
+}
 
 void wrth(int arg) {
 	int err = 0;
 
 	thval = (uint8_t) arg;
-	
+
+	if (abreg == 0) {
+		sprintf(cmd_mesg,"MAX Threshold Auto increment set:0x%02X",thval);
+		SetThrsValue();
+		PushHpu();
+		return;
+	}
+
 	BusWrite(MAX_ADDR,abreg,thval,0);
 	if (bus_err == 0) {
 		PushHpu();
@@ -2798,12 +2916,23 @@ void wrth(int arg) {
 	sprintf(cmd_mesg,"MAX5387 Device did not answer, err:%d",bus_err);
 }
 
+// Control how threshold value is used
+
 void abth(int arg) {
-	uint8_t val = 3;
-	if (arg == 1) val = 1;
-	if (arg == 2) val = 2;
+	uint8_t val = 0;
+	
+	if (arg == 0) val = 0; 
+	if (arg == 1) val = A_ONLY;
+	if (arg == 2) val = B_ONLY;
+	if (arg == 3) val = A_AND_B;
 	abreg = val;
-	sprintf(cmd_mesg,"MAX Threshold write channels set: %d",val);
+
+	if (abreg)
+		sprintf(cmd_mesg,"MAX Threshold hardware select set: 0x%02X",abreg);
+	else {
+		SetThrsValue();
+		sprintf(cmd_mesg,"MAX Threshold set:AUTO");
+	}
 	PushHpu();
 }
 
@@ -2838,7 +2967,7 @@ void SetHtValue(int flg) {
 	if (flg) {
 		nhtval = 0;
 		bitBang(nhtval);
-		BusWrite(MAX_ADDR,abreg,thval,0);
+		SetThrsValue();
 		PushHpu();
 		return;
 	}
@@ -2856,7 +2985,7 @@ void SetHtValue(int flg) {
 
 	// N.B. The bigger the value, the lower the HT voltage
 
-	// More than 10 extra events adjust
+	// More than 10 extra events in a second, adjust
 
 	if (inc_ht_flg > 10) {	
 		if (decadj > 0) decadj--;
@@ -2864,9 +2993,9 @@ void SetHtValue(int flg) {
 		inc_ht_flg = 0;
 	}
 	
-	// No events detected, adjust
+	// No events detected for 5 seconds, adjust
 
-	if (dec_ht_flg) {
+	if (dec_ht_flg > 5) {
 		if (incadj > 0) incadj--;
 		else decadj++;
 		dec_ht_flg = 0;
@@ -2885,15 +3014,17 @@ void SetHtValue(int flg) {
 		ohtval = nhtval;
 		bitBang(nhtval);		  // Set HT value
 		BusWrite(MAX_ADDR,abreg,thval,0); // Set threshold
+		SetThrsValue();
 		PushHpu();			  // Send message
 	}
 }
 
 void PushHpu() {
-	if (output_format) {
-		sprintf(txt,"{'HPU':{'Ato':'0x%02X','Hpu':'0x%02X','Thr':'0x%02X','Abr':'0x%02X'}}\n",nhtval,puval,thval,abreg);
-		PushTxt(txt);
-	}
+	if (output_format)
+		sprintf(txt,"{'HPU':{'Ato':'0x%02X','Hpu':'0x%02X','Th0':'0x%02X','Th1':'0x%02X','Thr':'0x%02X','Abr':'0x%02X'}}\n",nhtval,puval,athv0,athv1,thval,abreg);
+	else
+		sprintf(txt,"%s,HPU,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,%d\n",CSVERS,nhtval,puval,athv0,athv1,thval,abreg);
+	PushTxt(txt);
 }
 
 // ==========================================================================
@@ -2958,4 +3089,12 @@ void unid(int arg) {
 	GetUid();
 	PushUid(1);
 	sprintf(cmd_mesg,"UNID:%s display_rate:%d",uidtxt,uid_display_rate);
+}
+
+void strg(int arg) {
+	sprintf(cmd_mesg,"STRG: A:%d B:%d",striga,strigb);
+	if (arg) {
+		striga = 0;
+		strigb = 0;
+	}
 }
