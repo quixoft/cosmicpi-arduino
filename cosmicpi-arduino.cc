@@ -14,7 +14,7 @@
 
 // Julian Lewis lewis.julian@gmail.com
 
-#define FWVERS "21/December/2016 01:00"
+#define FWVERS "03/January/2017 17:00"
 #define CSVERS "V1"	// Output CSV version
 
 // The output from this program is processed by a Python monitor on the other end of the
@@ -103,7 +103,7 @@
 // Configuration constants
 
 // The size of the one second event buffer
-#define PPS_EVENTS 3	// The maximum number of events stored per second
+#define PPS_EVENTS 4	// The maximum number of events stored per second
 #define ADC_BUF_LEN 32	// Maximum number of ADC values per event
 
 // This is the event queue size
@@ -215,8 +215,8 @@ extern char *BmpDebug();
 void SetHtValue(int flg);	// HT setting
 void SetThrsValue();		// Threshold per channel based on ADC	
 
-int ht_inc_tweak = 5;	// If we get more than this events per second, reduce the HT	
-int ht_dec_tweak = 3;	// If we see no events for this number of seconds, increase the HT
+int ht_inc_tweak = (PPS_EVENTS - 2);	// If we get more than this events per second, reduce the HT (Must be < PPS_EVENTS !)	
+int ht_dec_tweak = 5;			// If we see no events for this number of seconds, increase the HT
 
 // Unique Arduino 128 bit ID code
 
@@ -298,7 +298,9 @@ typedef enum {
 	STRG,	// STRIGA and STRIGB counters
 	DEAD,	// Dead time after event
 	ADCD,	// Dump ADC average values
+	PEAK,	// Find peaks
 
+	OUTP,	// Control output
 	JSON,	// Set out put JSON 1, CSV 0
 
 	CMDS };	// Command count
@@ -359,6 +361,8 @@ void abth(int arg);
 void strg(int arg);
 void dead(int arg);
 void adcd(int arg);
+void peak(int arg);
+void outp(int arg);
 void json(int arg);
 
 // Command table
@@ -401,6 +405,8 @@ CmdStruct cmd_table[CMDS] = {
 	{ STRG, strg, "STRG", "Display strigA and strigB counters 1=Enable", 1 },
 	{ DEAD, dead, "DEAD", "The dead time after an event" , 1 },
 	{ ADCD, adcd, "ADCD", "ADC display average values for Ch0 and Ch1", 1 },
+	{ PEAK, peak, "PEAK", "Try to find muon peaks", 1 },
+	{ OUTP, outp, "OUTP", "Output on=1, off=0", 1},
 	{ JSON, json, "JSON", "Select output format JSON=1 or CSV=0 (default)", 1 }
 };
 
@@ -1516,12 +1522,9 @@ void setup() {
 
 // Copy text to the buffer for future printing
 
-int silent = 0;
 void PushTxt(char *txt) {
 	
 	int i, l = strlen(txt);
-
-	if (silent) return;
 
 	// If this happens there is a programming bug
  
@@ -1552,9 +1555,8 @@ void PushTxt(char *txt) {
 
 void PutChar() {
 	
-	char c[2];			// One character zero terminated string
-
-	if (tsze) {			// If the buffer is not empty
+	char c[2];				// One character zero terminated string
+	if ((tsze) && (!Serial.available())) {	// If the buffer is not empty and not reading
 
 		c[0] = txtb[txtr]; 		// Get the next character from the read pointer
 		c[1] = '\0';			// Build a zero terminated string
@@ -1785,16 +1787,15 @@ void PushEvq(int flg, int *qsize, int *missed) {
 	}
 }
 
-// Read one input character, we have exactly the same problem with
-// the serial line read as with writing, so we need the same work around
+// Read in command line
 
-void ReadOneChar() {
+void ReadChars() {
 	char c;
 
 	// Suck in all the characters available on the input stream
 	// put as many as will fit in the cmd buffer, and say ready
 
-	if ((irdy == 0) && (Serial.available())) {	// If buffer free
+	while ((irdy == 0) && (Serial.available())) {	// If buffer free
 		c = (char) Serial.read();		// Read one char
 		if (c == '\n') istp = 1;		// Stop on '\n'
 		if ((!istp) && (irdp < (CMDLEN -1))) {
@@ -1802,7 +1803,8 @@ void ReadOneChar() {
 			irdp = irdp + 1;
 			cmd[irdp] = 0;
 		} else irdy = 1;
-	} else	irdy = 1;
+	}
+	irdy = 1;
 }
 
 // Implement the command callback functions
@@ -1830,6 +1832,17 @@ void help(int arg) {	// Display the help
 
 		sprintf(txt,"{'HLP':{'Idn':%d,'Nme':'%s','Hlp':'%s'}}\n",cms->Id,cms->Name,cms->Help);
 		PushTxt(txt);
+	}
+}
+
+int output_on = 1;
+void outp(int arg) {
+	if (arg) {
+		output_on = 1;
+		sprintf(cmd_mesg,"OUTPUT: ON");
+	} else {
+		output_on = 0;
+		sprintf(cmd_mesg,"OUTPUT: OFF");
 	}
 }
 
@@ -2042,7 +2055,7 @@ void ParseCmd() {
 	return;
 }
 
-// This waits for a ready buffer from ReadOneChar. Once ready the buffer is
+// This waits for a ready buffer from ReadChars. Once ready the buffer is
 // locked until its been seen here
 
 void DoCmd() {
@@ -2061,21 +2074,26 @@ void loop() {
 
 	if (displ) {				// Displ is set in the PPS ISR, we will reset it here
 		DoCmd();			// Execute any incomming commands
-		PushEvq(0,&qsize,&missed);	// Push any events
-		PushHtu(0);			// Push HTU temperature and humidity
-		PushBmp(0);			// Push BMP temperature and barrometric altitude
-		PushLoc(0);			// Push location latitude and longitude
-		PushTim(0);			// Push timing data
-		PushDtg(0);			// Push the date
-		PushUid(0);			// Push unique ID
 		
-		MagReadData();			// Read magnetic data
-		MagConvData();			// Convert to Gauss
-		MagPoll();			// Check for magnetic event
-		PushMag(0);			// Push mag data
-		PushAcl(0);			// Push accelarometer datai
+		if (output_on) {
+			PushEvq(0,&qsize,&missed);	// Push any events
+			PushHtu(0);			// Push HTU temperature and humidity
+			PushBmp(0);			// Push BMP temperature and barrometric altitude
+			PushLoc(0);			// Push location latitude and longitude
+			PushDtg(0);			// Push the date
+			PushUid(0);			// Push unique ID
+		
+			MagReadData();			// Read magnetic data
+			MagConvData();			// Convert to Gauss
+			MagPoll();			// Check for magnetic event
+			PushMag(0);			// Push mag data
+			PushAcl(0);			// Push accelarometer datai
 
+		}
+
+		PushTim(0);			// Push timing data
 		PushSts(0,qsize,missed);	// Push status
+
 		GetDateTime();			// Read the next date/time from the GPS chip
 
 		displ = 0;			// Clear flag for next PPS
@@ -2108,8 +2126,8 @@ void loop() {
 		digitalWrite(EVT_PIN,LOW);
 	}
 
+	ReadChars();	// Get next input command string
 	PutChar();	// Print one character per loop !!!
-	ReadOneChar();	// Get next input command char
 }
 
 // =====================================================
@@ -2218,25 +2236,21 @@ void clear_peaks() {
 	}
 }
 
-#define PWID 3
-#define PHIG 310	// 250mV on ADC
-#define PLOW 124	// 100mV on ADC
+#define PWID 1000	// Width max
+#define PHIG 1		// Peak height mbove threshold in
 
-int filter_peaks() {
-	int i, pcnt=0;
-	struct Peak *pp;	// Points to current peak
+int test_peak(struct Peak *pp) {
+
 	uint16_t phig;
 
-	for (i=0; i<peak_index; i++) {
-		pp = &peaks[i];
-		phig = pp->Max - pp->Min;
-		if ((phig > PHIG) && (pp->Width <= PWID))
-			pcnt++;
-	}
-	return pcnt;
+	phig = pp->Max - pp->Min;
+	if ((phig >= PHIG) && (pp->Width <= PWID))
+		return 1;
+
+	return 0;
 }
 
-int get_peaks(uint8_t chn, uint16_t athr) {	// Threshold to test
+int get_peaks(uint8_t chn, uint8_t thval) {
 
 	int i;
 	int start = 0;		// Start of event index
@@ -2245,9 +2259,12 @@ int get_peaks(uint8_t chn, uint16_t athr) {	// Threshold to test
 
 	struct Peak *pp;	// Points to current peak
 	uint16_t *abuf;		// ADC buffer
+	uint16_t athr;		// ADC Threshold
 
 	if (chn) abuf = ch1;
 	else     abuf = ch0;
+
+	athr = adc_avr[chn] + AdcFromVolts(ThrToVolts(thval));
 
 	// Try to find the next 1000=PEAKS peaks
 
@@ -2265,7 +2282,7 @@ int get_peaks(uint8_t chn, uint16_t athr) {	// Threshold to test
 						pp->Start = start;
 						pp->Loops = loops;
 						pp->Max   = abuf[i];
-						pp->Min   = abuf[i];
+						pp->Min   = adc_avr[chn];
 					} else
 						break;
 				}
@@ -2275,6 +2292,7 @@ int get_peaks(uint8_t chn, uint16_t athr) {	// Threshold to test
 			 } else {
 				if (start) {
 					pp->Width = width;
+					if (!test_peak(pp)) peak_index--; 
 					start = 0;
 					width = 0;
 				}
@@ -2282,6 +2300,31 @@ int get_peaks(uint8_t chn, uint16_t athr) {	// Threshold to test
 		}
 	}
 	return peak_index;
+}
+
+void PushPeaks(uint8_t chn) {
+	struct Peak *pp;	// Points to current peak
+	int i;
+
+	float    vavr, vhig, twid;	// Average ADC, Peak hight, Peak width
+	uint16_t pavr, phig, pwid;
+
+	for (i=0; i<peak_index; i++) {
+		pp = &peaks[i];
+
+		pavr = adc_avr[chn];
+		vavr = AdcToVolts(pavr);
+
+		phig = pp->Max - pp->Min;
+		vhig = AdcToVolts(phig);
+
+		pwid = pp->Width;
+		twid = pwid * 2.5;
+	
+		sprintf(txt,	"{'TXT':{'Txt':'Peak:%d,%d,%d Adc:%d->%fV Hig:%d->%fV Wid:%d->%fUs       '}}\n"
+				,i+1,pp->Loops,pp->Start      ,pavr,vavr  ,phig,vhig  ,pwid,twid);
+		PushTxt(txt);
+	}
 }
 
 // =============================================
@@ -2709,7 +2752,7 @@ void rcpu(int arg) {
 #define A_AND_B 0x13
 
 uint8_t abreg = 0;	// Auto
-uint8_t thval = 0x18;	// 230mV nice initial value
+uint8_t thval = 0x18;	// Initial value
 uint8_t athv0 = 0;	// Automatic threshold hardware value channel 0
 uint8_t athv1 = 0;
 
@@ -2874,10 +2917,11 @@ void SetHtValue(int flg) {
 
 	// Extra events in a second, adjust
 
-	if (inc_ht_flg) {	
+	if (inc_ht_flg > ht_dec_tweak) {	
 		if (decadj > 0) decadj--;
 		else incadj++;
 		inc_ht_flg = 0;
+		dec_ht_flg = 0;
 	}
 	
 	// No events detected for X seconds, adjust
@@ -2885,6 +2929,7 @@ void SetHtValue(int flg) {
 	if (dec_ht_flg > ht_dec_tweak) {
 		if (incadj > 0) incadj--;
 		else decadj++;
+		inc_ht_flg = 0;
 		dec_ht_flg = 0;
 	}
 
@@ -3014,18 +3059,10 @@ void adcd(int arg) {
 	sprintf(cmd_mesg,"ADCD: Average: Ch0:0x%03X->%f Volts Ch1:0x%03X->%f Volts",avc0,AdcToVolts(avc0),avc1,AdcToVolts(avc1));
 }
 
-void thrs(int arg) {
+void peak(int arg) {
 
-#if 0
-#define PMAX 3
-#define PSTR 100
-
-	uint16_t athr, aval;	// Threshold ADC value under test
-	uint8_t  hthr, chn;	// Hardware threshold value, channel
-	float    vlta, vltt;
-	uint16_t adca;		// ADC average
-
-	int peaks;
+	int i, peaks;
+	uint8_t chn;
 
 	if (arg) chn = 1;
 	else     chn = 0;
@@ -3034,30 +3071,20 @@ void thrs(int arg) {
 	ClearAdcBuf();
 	ReadAdcBuf(PTS_CHBUF_LEN);
 	AveragePoints(chn,PTS_CHBUF_LEN);
-	
-	athr = 2*adc_max[chn];
 
-	for (; athr>0; athr--) {	
-		aval = athr + adca;
-
-		clear_peaks();
-		peaks = get_peaks(chn,aval);
-		if (peaks > PMAX) break;
-		
-		peaks = filter_peaks();
-		if ((peaks >= 1) && (peaks <= PMAX)) {
-			vlta = AdcToVolts(aval);
-			hthr = ThrFromVolts(vlta);
-			vltt = ThrToVolts(hthr);	
-			sprintf(cmd_mesg,"Thrs:%d->Chn:%d Adc:%d->%fV->Thr:%d->%fV Pks:%d",athr,chn,aval,vlta,hthr,vltt,peaks);
-			return;
+	for (i=0; i<10; i++) {
+		peaks = get_peaks(chn,thval);
+		if (peaks) {
+			PushPeaks(chn);
+			break;
 		}
-		Serial.print("\n");
 	}
-	cmd_result = NO_THRESHOLD;
-	sprintf(cmd_mesg,"Thrs:Not found, try again");
+	
+	sprintf(cmd_mesg,"Peak:Found:%d",peaks);
 	return;
-#endif
+}
+
+void thrs(int arg) {
 
 	float th0v,th1v,ad0v,ad1v,thmv;
 
